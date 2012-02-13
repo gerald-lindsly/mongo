@@ -8,6 +8,7 @@
 #define MONGO_EXPOSE_MACROS 1
 
 #include <iostream>
+#include <conio.h>
 #include "../dbclient.h" // the mongo c++ driver
 #include "../../util/mmap.h"
 #include <assert.h>
@@ -30,9 +31,17 @@ bo options;
 unsigned long long len; // file len
 const unsigned PG = 4096;
 unsigned nThreadsRunning = 0;
+const unsigned long long GB = 1024ULL*1024*1024;
+const unsigned MB = 1024 * 1024;
+bool shuttingDown;
+
 
 // as this is incremented A LOT, at some point this becomes a bottleneck if very high ops/second (in cache) things are happening.
-AtomicUInt iops;
+AtomicUInt readOps;
+AtomicUInt writeOps;
+
+unsigned long long totReadOps;
+unsigned long long totWriteOps;
 
 SimpleMutex m("mperf");
 
@@ -63,33 +72,35 @@ unsigned long long rrand() {
     return (static_cast<unsigned long long>(rand()) << 15) ^ rand();
 }
 
+int threads;
+
 void workerThread() {
     bool r = options["r"].trueValue();
     bool w = options["w"].trueValue();
     //cout << "read:" << r << " write:" << w << endl;
     long long su = options["sleepMicros"].numberLong();
     Aligned a;
-    while( 1 ) { 
+    while( !shuttingDown ) { 
         unsigned long long rofs = (rrand() * PG) % len;
         unsigned long long wofs = (rrand() * PG) % len;
         if( mmf ) { 
             if( r ) {
                 dummy += mmf[rofs];
-                iops++;
+                readOps++;
             }
             if( w ) {
                 mmf[wofs] = 3;
-                iops++;
+                writeOps++;
             }
         }
         else {
             if( r ) {
                 lf->readAt(rofs, a.addr(), PG);
-                iops++;
+                readOps++;
             }
             if( w ) {
                 lf->writeAt(wofs, a.addr(), PG);
-                iops++;
+                writeOps++;
             }
         }
         long long micros = su / nThreadsRunning;
@@ -97,12 +108,13 @@ void workerThread() {
             sleepmicros(micros);
         }
     }
+    threads--;
 }
 
 void go() {
     assert( options["r"].trueValue() || options["w"].trueValue() );
     MemoryMappedFile f;
-    cout << "creating test file size:";
+    cout << "test file size:";
     len = options["fileSizeMB"].numberLong();
     if( len == 0 ) len = 1;
     cout << len << "MB ..." << endl;
@@ -112,25 +124,68 @@ void go() {
         cout << "\nsizes > 2GB not yet supported with mmf:false" << endl; 
         return;
     }
-    len *= 1024 * 1024;
+    len *= MB;
     const char *fname = "./mongoperf__testfile__tmp";
-    try {
-        boost::filesystem::remove(fname);
-    }
-    catch(...) { 
-        cout << "error deleting file " << fname << endl;
-        return;
-    }
-    lf = new LogFile(fname,true);
-    const unsigned sz = 1024 * 1024 * 32; // needs to be big as we are using synchronousAppend.  if we used a regular MongoFile it wouldn't have to be
-    char *buf = (char*) malloc(sz+4096);
-    const char *p = round(buf);
-    for( unsigned long long i = 0; i < len; i += sz ) { 
-        lf->synchronousAppend(p, sz);
-        if( i % (1024ULL*1024*1024) == 0 && i ) {
-            cout << i / (1024ULL*1024*1024) << "GB..." << endl;
+  
+    union {
+        unsigned long long size;
+        struct {
+            DWORD lo;
+            DWORD hi;
+        };
+    };
+    size = 0;
+
+#ifdef _WIN32
+    ::HANDLE h = CreateFileA(fname, GENERIC_READ, 0, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+    if (h) {
+        lo = GetFileSize(h, &hi);
+        CloseHandle(h);
+        if (len > size) {
+            size = 0;
+            DeleteFileA(fname);
         }
     }
+#else
+    struct stat s;
+    if (!stat(fname, &s)) {
+        size = s.st_size;
+        if (len > size) {
+            size = 0;
+            unlink(fname);
+        }
+    }
+#endif
+
+    const unsigned sz = 32 * MB; // needs to be big as we are using synchronousAppend.  if we used a regular MongoFile it wouldn't have to be
+    char *buf = (char*) malloc(sz+4096);
+    char *p = round(buf);
+    lf = new LogFile(fname, true);
+    if (size == 0) {
+        cout << "creating ...\n";
+        for( unsigned long long i = 0; i < len; i += sz ) { 
+            lf->synchronousAppend(p, sz);
+            if( i % GB == 0 && i ) {
+                cout << i / GB << "GB..." << endl;
+            }
+        }
+    }
+/*
+    char* str1 = "Just some string";
+    strcpy(p, str1);
+    lf->writeAt(1 * GB, p, PG);
+    char* str2 = "This is a string";
+    strcpy(p, str2);
+    lf->writeAt(5 * GB, p, PG);
+    *p = 0;
+    lf->readAt(5 * GB, p, PG);
+    if (strcmp(str2, p) != 0)
+        cout << "bad 64-bit read\n";
+    lf->readAt(1 * GB, p, PG);
+    if (strcmp(p, str1) != 0)
+        cout << "bad 64-bit write\n";
+*/
+
     BSONObj& o = options;
 
     if( o["mmf"].trueValue() ) { 
@@ -148,79 +203,139 @@ void go() {
 
     cout << "testing..."<< endl;
 
-    unsigned wthr = (unsigned) o["nThreads"].Int();
-    if( wthr < 1 ) { 
-        cout << "bad threads field value" << endl;
-        return;
-    }
+    unsigned wthr = (unsigned) o["nThreads"].numberInt();
+    if (wthr == 0) wthr = 1;
     unsigned i = 0;
     unsigned d = 1;
     unsigned &nthr = nThreadsRunning;
-    while( 1 ) {
+    unsigned long long totalOps = 0;
+    Timer t;
+    while( i == 0 || threads > 0) {
         if( i++ % 8 == 0 ) {
             if( nthr < wthr ) {
                 while( nthr < wthr && nthr < d ) {
                     nthr++;
                     boost::thread w(workerThread);
+                    threads++;
                 }
                 cout << "new thread, total running : " << nthr << endl;
                 d *= 2;
             }
         }
         sleepsecs(1);
-        unsigned long long w = iops.get();
-        iops.zero();
-        w /= 1; // 1 secs
+        unsigned long long r = readOps.get();
+        readOps.zero();
+        totReadOps += r;
+        unsigned long long w = writeOps.get();
+        writeOps.zero();
+        totWriteOps += w;
+        w += r;
+        // w /= 1; // 1 secs
+        totalOps += w;
         cout << w << " ops/sec ";
         if( mmf == 0 ) 
             // only writing 4 bytes with mmf so we don't say this
-            cout << (w * PG / 1024 / 1024) << " MB/sec";
+            cout << (w * PG / MB) << " MB/sec";
         cout << endl;
     }
+    cout << "read ops     = " << totReadOps << "\n" <<
+            "write ops    = " << totWriteOps << endl <<
+            "total ops    = " << totalOps << "\n" <<
+            "total time   = " << t.seconds() << " seconds\n";
+    if (mmf == 0)
+        cout << "total MB/sec = " << (totalOps * PG / MB);
+
+ }
+            
+
+char* validOptions[] = {
+    "nThreads", "fileSizeMB", "sleepMicros", "mmf", "r", "w", "syncDelay", 0
+};
+
+
+#ifdef _WIN32
+BOOL CtrlHandler(DWORD fdwCtrlType) {
+    shuttingDown = true;
+    return TRUE;
 }
 
-int main(int argc, char *argv[]) {
+#else
+sigset_t asyncSignals;
+// The above signals will be processed by this thread only, in order to
+// ensure the db and log mutexes aren't held.
+void interruptThread() {
+    int x;
+    sigwait( &asyncSignals, &x );
+    shuttingDown = true;
+}
 
-    try {
+
+#endif
+
+
+int runner(int argc, char *argv[]) {
+    // try
+    {
+#ifdef _WIN32
+        SetConsoleCtrlHandler((PHANDLER_ROUTINE) CtrlHandler, TRUE);
+#else
+        sigemptyset( &asyncSignals );
+        sigaddset( &asyncSignals, SIGHUP );
+        sigaddset( &asyncSignals, SIGINT );
+        sigaddset( &asyncSignals, SIGTERM );
+        assert( pthread_sigmask( SIG_SETMASK, &asyncSignals, 0 ) == 0 );
+        boost::thread it( interruptThread );
+#endif
         cout << "mongoperf" << endl;
 
-        if( argc > 1 ) { 
-cout <<
-
-"\n"
-"usage:\n"
-"\n"
-"  mongoperf < myjsonconfigfile\n"
-"\n"
-"  {\n"
-"    nThreads:<n>,     // number of threads (default 1)\n"
-"    fileSizeMB:<n>,   // test file size (default 1MB)\n"
-"    sleepMicros:<n>,  // pause for sleepMicros/nThreads between each operation (default 0)\n"
-"    mmf:<bool>,       // if true do i/o's via memory mapped files (default false)\n"
-"    r:<bool>,         // do reads (default false)\n"
-"    w:<bool>,         // do writes (default false)\n"
-"    syncDelay:<n>     // secs between fsyncs, like --syncdelay in mongod. (default 0/never)\n"
-"  }\n"
-"\n"
-"mongoperf is a performance testing tool. the initial tests are of disk subsystem performance; \n"
-"  tests of mongos and mongod will be added later.\n"
-"most fields are optional.\n"
-"non-mmf io is direct io (no caching). use a large file size to test making the heads\n"
-"  move significantly and to avoid i/o coalescing\n"
-"mmf io uses caching (the file system cache).\n"
-"\n"
-
-<< endl;
-            return 0;
+        const char* fname = "stdin";
+        std::istream *in = &cin;
+        if( argc > 1 ) {
+            fname = argv[1];
+            if (strcmp(fname, "-h") == 0) {
+                cout <<
+                    "\n"
+                    "usage:\n"
+                    "\n"
+                    "  mongoperf < myjsonconfigfile\n"
+                    "  mongoperf myjsconfigfile\n"
+                    "  mongoperf -h"
+                    "\n"
+                    "  {\n"
+                    "    nThreads:<n>,     // number of threads (default 1)\n"
+                    "    fileSizeMB:<n>,   // test file size (default 1MB)\n"
+                    "    sleepMicros:<n>,  // pause for sleepMicros/nThreads between each operation (default 0)\n"
+                    "    mmf:<bool>,       // if true do i/o's via memory mapped files (default false)\n"
+                    "    r:<bool>,         // do reads (default false)\n"
+                    "    w:<bool>,         // do writes (default false)\n"
+                    "    syncDelay:<n>     // secs between fsyncs, like --syncdelay in mongod. (default 0/never)\n"
+                    "  }\n"
+                    "\n"
+                    "mongoperf is a performance testing tool. the initial tests are of disk subsystem performance; \n"
+                    "  tests of mongos and mongod will be added later.\n"
+                    "most fields are optional.\n"
+                    "non-mmf io is direct io (no caching). use a large file size to test making the heads\n"
+                    "  move significantly and to avoid i/o coalescing\n"
+                    "mmf io uses caching (the file system cache).\n"
+                    "\n"
+                    << endl;
+                return 0;
+            }
+            in = new ifstream(fname, ios_base::in);
+            if (in->bad()) {
+                cout << "Error: Unable to open " << argv[1];
+                delete in;
+                return 1;
+            }
         }
 
         cout << "use -h for help" << endl;
-
+        cout << "reading from " << fname << "...\n\n";
         char input[1024];
         memset(input, 0, sizeof(input));
-        cin.read(input, 1000);
+        in->read(input, 1000);
         if( *input == 0 ) { 
-            cout << "error no options found on stdin for mongoperf" << endl;
+            cout << "Error: No options found reading " << fname << endl;
             return 2;
         }
 
@@ -234,9 +349,25 @@ cout <<
             cout << "couldn't parse json options" << endl;
             return -1;
         }
-        cout << "options:\n" << options.toString() << endl;
+        cout << "options:\n" << options.toString() << "\n\n" << endl;
+
+        bool err = false;
+        for (BSONObjIterator i = options.begin(); i.more(); ) {
+            const char* name = i.next().fieldName();
+            bool found = false;
+            for (char** s = validOptions; !found && *s; s++)
+                found = strcmp(*s, name) == 0;
+            if (!found) {
+                err = true;
+                cout << "Error: Unrecognized field name (" << name << ") in the options.";
+            }
+        }
+        if (err) return -1;
 
         go();
+
+        if (in != &cin)
+            delete in;
 #if 0
         cout << "connecting to localhost..." << endl;
         DBClientConnection c;
@@ -261,11 +392,21 @@ cout <<
         cout << "  " << c.getLastErrorDetailed().toString() << endl;
 #endif
     } 
+/*
     catch(DBException& e) { 
         cout << "caught DBException " << e.toString() << endl;
         return 1;
     }
-
+*/
     return 0;
 }
 
+
+int main(int argc, char *argv[]) {
+    int ret = runner(argc, argv);
+#ifdef _WIN32
+    if (IsDebuggerPresent())
+        _getch();
+#endif
+    return ret;
+}
