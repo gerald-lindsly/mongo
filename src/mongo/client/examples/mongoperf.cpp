@@ -9,6 +9,7 @@
 
 #include <iostream>
 #include <conio.h>
+#include <ctime>
 #include "../dbclient.h" // the mongo c++ driver
 #include "../../util/mmap.h"
 #include <assert.h>
@@ -37,6 +38,18 @@ bool shuttingDown;
 
 bo options;
 
+
+inline string format_time_t(time_t t = time(0) ) {
+        char buf[64];
+#if defined(_WIN32)
+        ctime_s(buf, sizeof(buf), &t);
+#else
+        ctime_r(&t, buf);
+#endif
+        buf[19] = 0; // don't want the year
+        return buf;
+}
+
 bool isNumber(const char* fieldname) {
     switch (options[fieldname].type()) {
         case NumberDouble: ;
@@ -58,8 +71,6 @@ AtomicUInt threads;
 
 unsigned long long totReadOps;
 unsigned long long totWriteOps;
-
-SimpleMutex m("mperf");
 
 int syncDelaySecs = 0;
 
@@ -240,7 +251,7 @@ void go() {
         w += r;
         // w /= 1; // 1 secs
         totalOps += w;
-        cout << w << " ops/sec ";
+        cout << format_time_t() << ": " << w << " ops/sec ";
         if( mmf == 0 ) 
             // only writing 4 bytes with mmf so we don't say this
             cout << (w * PG / MB) << " MB/sec";
@@ -329,7 +340,7 @@ int runner(int argc, char *argv[]) {
         }
         in = new ifstream(fname, ios_base::in);
         if (in->bad()) {
-            cout << "Error: Unable to open " << argv[1];
+            cout << "Error: Unable to open " << fname;
             delete in;
             return 1;
         }
@@ -344,6 +355,8 @@ int runner(int argc, char *argv[]) {
         cout << "Error: No options found reading " << fname << endl;
         return 2;
     }
+    if (in != &cin)
+        delete in;
 
     string s = input;
     str::stripTrailing(s, "\n\r\0x1a");
@@ -407,9 +420,6 @@ int runner(int argc, char *argv[]) {
     }
 
     go();
-
-    if (in != &cin)
-        delete in;
 
 #if 0
     cout << "connecting to localhost..." << endl;
