@@ -10,9 +10,6 @@
 /*    N.B. The MODIFICATIONS introduced in the 9th printing (2002) are
       included here; there's no backwards compatibility with the original. */
 
-/*    This version also adopts Brendan McKay's suggestion to
-      accommodate naive users who forget to call ran_start(seed).          */
-
 /*    If you find any bugs, please report them immediately to
  *                 taocp@cs.stanford.edu
  *    (and you will be rewarded if the bug is genuine). Thanks!            */
@@ -20,7 +17,7 @@
 /************ see the book for explanations and caveats! *******************/
 /************ in particular, you need two's complement arithmetic **********/
 
-// adapted to C++ and made re-entrant by Gerald Lindsly (2012)
+// adapted to C++ by Gerald Lindsly (2012)
 
 class RandomGenerator
 {
