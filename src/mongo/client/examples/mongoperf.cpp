@@ -141,9 +141,7 @@ void workerThread() {
             }
             if (w) {
                 unsigned long long wofs = (rrand() * PG) % len;
-                randBuf(rnd, q, opSize);
-                memcpy(&mmf[wofs], buf, opSize);
-                mmf[wofs] = 3;
+                randBuf(rnd, mmf + wofs, opSize);
                 writeOps++;
             }
             if (micros) sleepmicros(micros);
