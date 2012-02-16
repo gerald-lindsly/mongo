@@ -254,6 +254,7 @@
     <ClCompile Include="..\..\util\mmap_win.cpp" />
     <ClCompile Include="..\mongo_client_lib.cpp" />
     <ClCompile Include="mongoperf.cpp" />
+    <ClCompile Include="Rand.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\bson\bson-inl.h" />
@@ -271,6 +272,10 @@
     <ClInclude Include="..\..\bson\stringdata.h" />
     <ClInclude Include="..\..\util\logfile.h" />
     <ClInclude Include="..\..\util\mmap.h" />
+    <ClInclude Include="Rand.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\..\db\x64\Debug\mongoperf.cfg" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

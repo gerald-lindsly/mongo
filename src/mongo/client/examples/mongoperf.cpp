@@ -20,6 +20,8 @@
 
 #include <boost/filesystem/operations.hpp>
 
+#include "Rand.h"
+
 using namespace std;
 using namespace mongo;
 using namespace bson;
@@ -31,6 +33,7 @@ MemoryMappedFile *mmfFile;
 char *mmf = 0;
 unsigned long long len; // file len
 const unsigned PG = 4096;
+unsigned opSize = PG;
 unsigned nThreadsRunning = 0;
 const unsigned long long GB = 1024ULL*1024*1024;
 const unsigned MB = 1024 * 1024;
@@ -99,9 +102,33 @@ unsigned long long rrand() {
     return (static_cast<unsigned long long>(rand()) << 15) ^ rand();
 }
 
+
+void randBuf(RandomGenerator* rnd, char* buf, int size)
+{
+    long x;
+    int n = 0;
+    for (int i = 0; i < size; i++) {
+        if (n == 0)
+            x = rnd->next();
+        char c = (char)((x >> (n * 8)) & 0xFF);
+        buf[i] = c;
+        n = (n+1) % 3;
+    }
+}
+
 void workerThread() {
     bool r = options["r"].trueValue();
     bool w = options["w"].trueValue();
+    RandomGenerator* rnd = 0;
+
+    if (w) rnd = new RandomGenerator(rand());
+
+    char* buf = new char[opSize + PG];
+    if (!buf) {
+        cout << "Error: out of memory allocating buffers.  Try a smaller opSize\n";
+        exit(1);
+    }
+    char* q = round(buf);
     //cout << "read:" << r << " write:" << w << endl;
     long long su = options["sleepMicros"].numberLong();
     long long micros = su / nThreadsRunning;
@@ -109,11 +136,13 @@ void workerThread() {
         while (!shuttingDown) { 
             if (r) {
                 unsigned long long rofs = (rrand() * PG) % len;
-                dummy += mmf[rofs];
+                memcpy(buf, &mmf[rofs], opSize);
                 readOps++;
             }
             if (w) {
                 unsigned long long wofs = (rrand() * PG) % len;
+                randBuf(rnd, q, opSize);
+                memcpy(&mmf[wofs], buf, opSize);
                 mmf[wofs] = 3;
                 writeOps++;
             }
@@ -121,21 +150,23 @@ void workerThread() {
        }
     }
     else {
-        Aligned a;
         while (!shuttingDown) { 
             if (r) {
                 unsigned long long rofs = (rrand() * PG) % len;
-                lf->readAt(rofs, a.addr(), PG);
+                lf->readAt(rofs, q, opSize);
                 readOps++;
             }
             if( w ) {
                 unsigned long long wofs = (rrand() * PG) % len;
-                lf->writeAt(wofs, a.addr(), PG);
+                randBuf(rnd, q, opSize);
+                lf->writeAt(wofs, q, opSize);
                 writeOps++;
             }
             if (micros) sleepmicros(micros);
         }
     }
+    delete buf;
+    delete rnd;
     threads--;
 }
 
@@ -187,6 +218,8 @@ void go() {
             }
         }
     }
+
+    len -= opSize; // don't allow IO past EOF
 /*
     char* str1 = "Just some string";
     strcpy(p, str1);
@@ -251,25 +284,22 @@ void go() {
         w += r;
         // w /= 1; // 1 secs
         totalOps += w;
-        cout << format_time_t() << ": " << w << " ops/sec ";
-        if( mmf == 0 ) 
-            // only writing 4 bytes with mmf so we don't say this
-            cout << (w * PG / MB) << " MB/sec";
-        cout << endl;
+        cout << format_time_t() << ": " << w << " ops/sec "
+             << (w * opSize / MB) << " MB/sec\n";
     }
     cout << "\nSummary:\n"
-            "read ops     = " << totReadOps << "\n" <<
+            "read ops     = " << totReadOps << endl <<
             "write ops    = " << totWriteOps << endl <<
-            "total ops    = " << totalOps << "\n" <<
+            "total ops    = " << totalOps << endl <<
             "total time   = " << t.seconds() << " seconds\n";
     if (mmf == 0)
-        cout << "total MB/sec = " << (totalOps * PG / MB / t.seconds());
+        cout << "total MB/sec = " << ((double)totalOps * opSize / MB / t.seconds());
 
  }
             
 
 char* validOptions[] = {
-    "nThreads", "fileSizeMB", "sleepMicros", "mmf", "r", "w", "syncDelay", "fileName", 0
+    "nThreads", "fileSizeMB", "sleepMicros", "mmf", "r", "w", "syncDelay", "fileName", "opSize", 0
 };
 
 
@@ -325,7 +355,8 @@ int runner(int argc, char *argv[]) {
                 "    r:<bool>,         // do reads (default false)\n"
                 "    w:<bool>,         // do writes (default false)\n"
                 "    syncDelay:<n>,    // secs between fsyncs, like --syncdelay in mongod. (default 0/never)\n"
-                "    fileName:<string> // Pathname of the scratch file (default mongoperf__testfile__tmp)\n"
+                "    fileName:<string> // pathname of the work file (default mongoperf__testfile__tmp)\n"
+                "    opSize:<n>        // size of reads and writes in bytes (default 4096)\n"
                 "  }\n"
                 "\n"
                 "mongoperf is a performance testing tool. the initial tests are of disk subsystem performance; \n"
@@ -390,7 +421,7 @@ int runner(int argc, char *argv[]) {
         return 2;
     }
 
-    if (!isNumber("fileSizeMB") || !isNumber("sleepMicros") || !isNumber("nThreads") || !isNumber("syncDelay"))
+    if (!isNumber("fileSizeMB") || !isNumber("sleepMicros") || !isNumber("nThreads") || !isNumber("syncDelay") || !isNumber("opSize"))
         return 2;
     BSONElement el = options["fileSizeMB"];
     if (el.type() == EOO)
@@ -418,6 +449,10 @@ int runner(int argc, char *argv[]) {
         }
         workname = el.valuestr();
     }
+
+    opSize = options["opSize"].numberInt();
+    if (opSize == 0)
+        opSize = PG;
 
     go();
 
