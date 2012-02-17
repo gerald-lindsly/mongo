@@ -304,16 +304,18 @@ void go() {
         w += r;
         // w /= 1; // 1 secs
         totalOps += w;
-        cout << format_time_t() << ": " << w << " ops/sec "
-             << (w * opSize / MB) << " MB/sec\n";
+        cout << format_time_t() << ": " << w << " ops/sec " <<
+            setiosflags(ios::fixed) << setprecision(2) << 
+            ((double) w * opSize / MB) << " MB/sec\n";
     }
-    cout << "\nSummary:\n"
-            "read ops     = " << totReadOps << endl <<
-            "write ops    = " << totWriteOps << endl <<
-            "total ops    = " << totalOps << endl <<
-            "total time   = " << t.seconds() << " seconds\n" <<
-            "total MB/sec = " << ((double)totalOps * opSize / MB / t.seconds());
-
+    cout << "\nSummary:\n";
+    if (r)      cout << "read ops     = " << totReadOps << endl;
+    if (w)      cout << "write ops    = " << totWriteOps << endl;
+    if (r && w) cout << "total ops    = " << totalOps << endl;
+    cout << "total time   = " << t.seconds() << " seconds\n" <<
+            "total MB/sec = " << 
+            setiosflags(ios::fixed) << setprecision(2) << 
+            ((double)totalOps * opSize / MB / t.seconds());
  }
             
 
