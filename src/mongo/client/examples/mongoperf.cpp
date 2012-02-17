@@ -40,6 +40,7 @@ const unsigned MB = 1024 * 1024;
 bool shuttingDown;
 bool random;
 bool append;
+bool sparse;
 bool r;
 bool w;
 
@@ -231,12 +232,19 @@ void go() {
         const unsigned sz = 32 * MB; // needs to be big as we are using synchronousAppend.  if we used a regular MongoFile it wouldn't have to be
         char *buf = (char*) malloc(sz+4096);
         char *p = round(buf);
-        for( unsigned long long i = 0; i < len; i += sz ) { 
-            lf->synchronousAppend(p, sz);
-            if( i % GB == 0 && i ) {
-                cout << i / GB << "GB..." << endl;
+        Timer t;
+        if (sparse)
+            lf->writeAt(len - PG, p, PG);
+        else {
+            for( unsigned long long i = 0; i < len; i += sz ) { 
+                lf->synchronousAppend(p, sz);
+                if( i % GB == 0 && i ) {
+                    cout << i / GB << "GB..." << endl;
+                }
             }
+            free(buf);
         }
+        cout << "It took " << (double) t.millis() / 1000 << " seconds to allocate the file.\n";
     }
 
     len -= opSize; // don't allow IO past EOF
@@ -321,7 +329,7 @@ void go() {
 
 char* validOptions[] = {
     "nThreads", "fileSizeMB", "sleepMicros", "mmf", 
-    "r", "w", "syncDelay", "fileName", "opSize", "random", "append", 0
+    "r", "w", "syncDelay", "fileName", "opSize", "random", "append", "sparse", 0
 };
 
 
@@ -384,13 +392,16 @@ int runner(int argc, char *argv[]) {
                 "    append:<bool>,     // run in journaling/append mode (default false)\n"
                 "    syncDelay:<n>,     // secs between fsyncs, like --syncdelay in mongod. (default 0/never)\n"
                 "    fileName:<string>, // pathname of the work file (default mongoperf__testfile__tmp)\n"
-                "    opSize:<n>         // size of reads and writes in bytes (default 4096)\n"
+                "    opSize:<n>,        // size of reads and writes in bytes (default 4096)\n"
+                "    sparse:<bool>      // attempt sparse allocation of the work file (default false)\n"
                 "  }\n"
                 "\n"
-                "most fields are optional.\n"
+                "Most fields are optional.\n"
                 "non-mmf io is direct io (no caching). use a large file size to test making the heads\n"
                 "  move significantly and to avoid i/o coalescing\n"
                 "mmf io uses caching (the file system cache).\n"
+                "The sparse option seeks directly to nearly the desired size and writes out a page; without the\n"
+                "option, the file is written from the beginning in 32MB chunks\n"
                 "\n"
                 << endl;
             return 0;
@@ -484,6 +495,7 @@ int runner(int argc, char *argv[]) {
 
     random = options["random"].trueValue();
     append = options["append"].trueValue();
+    sparse = options["sparse"].trueValue();
 
     if (append && (!w || r || options["mmf"].trueValue())) {
         cout << "Error: When append is true, w must be true, but r and mmf must be false";
