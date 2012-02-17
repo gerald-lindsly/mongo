@@ -38,6 +38,10 @@ unsigned nThreadsRunning = 0;
 const unsigned long long GB = 1024ULL*1024*1024;
 const unsigned MB = 1024 * 1024;
 bool shuttingDown;
+bool random;
+bool append;
+bool r;
+bool w;
 
 bo options;
 
@@ -117,8 +121,6 @@ void randBuf(RandomGenerator* rnd, char* buf, int size)
 }
 
 void workerThread() {
-    bool r = options["r"].trueValue();
-    bool w = options["w"].trueValue();
     RandomGenerator* rnd = 0;
 
     if (w) rnd = new RandomGenerator(rand());
@@ -132,16 +134,28 @@ void workerThread() {
     //cout << "read:" << r << " write:" << w << endl;
     long long su = options["sleepMicros"].numberLong();
     long long micros = su / nThreadsRunning;
-    if (mmf) {
+    if (append) {
+        while (!shuttingDown) { 
+            if (random)
+                randBuf(rnd, q, opSize);
+            lf->synchronousAppend(q, opSize);
+            writeOps++;
+            if (micros) sleepmicros(micros);
+       }
+    }
+    else if (mmf) {
         while (!shuttingDown) { 
             if (r) {
                 unsigned long long rofs = (rrand() * PG) % len;
-                memcpy(buf, &mmf[rofs], opSize);
+                memcpy(q, &mmf[rofs], opSize);
                 readOps++;
             }
             if (w) {
                 unsigned long long wofs = (rrand() * PG) % len;
-                randBuf(rnd, mmf + wofs, opSize);
+                if (random)
+                    randBuf(rnd, mmf + wofs, opSize);
+                else
+                    memcpy(mmf + wofs, q, opSize);
                 writeOps++;
             }
             if (micros) sleepmicros(micros);
@@ -156,7 +170,8 @@ void workerThread() {
             }
             if( w ) {
                 unsigned long long wofs = (rrand() * PG) % len;
-                randBuf(rnd, q, opSize);
+                if (random)
+                    randBuf(rnd, q, opSize);
                 lf->writeAt(wofs, q, opSize);
                 writeOps++;
             }
@@ -202,13 +217,20 @@ void go() {
         }
     }
 #endif
-
-    const unsigned sz = 32 * MB; // needs to be big as we are using synchronousAppend.  if we used a regular MongoFile it wouldn't have to be
-    char *buf = (char*) malloc(sz+4096);
-    char *p = round(buf);
+    
+    if (append && size) {
+#ifdef _WIN32
+        DeleteFileA(workname);
+#else
+        unlink(workname);
+#endif
+    }
     lf = new LogFile(workname, true);
-    if (size == 0) {
+    if (size == 0 && !append) {
         cout << "creating ...\n";
+        const unsigned sz = 32 * MB; // needs to be big as we are using synchronousAppend.  if we used a regular MongoFile it wouldn't have to be
+        char *buf = (char*) malloc(sz+4096);
+        char *p = round(buf);
         for( unsigned long long i = 0; i < len; i += sz ) { 
             lf->synchronousAppend(p, sz);
             if( i % GB == 0 && i ) {
@@ -289,15 +311,15 @@ void go() {
             "read ops     = " << totReadOps << endl <<
             "write ops    = " << totWriteOps << endl <<
             "total ops    = " << totalOps << endl <<
-            "total time   = " << t.seconds() << " seconds\n";
-    if (mmf == 0)
-        cout << "total MB/sec = " << ((double)totalOps * opSize / MB / t.seconds());
+            "total time   = " << t.seconds() << " seconds\n" <<
+            "total MB/sec = " << ((double)totalOps * opSize / MB / t.seconds());
 
  }
             
 
 char* validOptions[] = {
-    "nThreads", "fileSizeMB", "sleepMicros", "mmf", "r", "w", "syncDelay", "fileName", "opSize", 0
+    "nThreads", "fileSizeMB", "sleepMicros", "mmf", 
+    "r", "w", "syncDelay", "fileName", "opSize", "random", "append", 0
 };
 
 
@@ -352,6 +374,8 @@ int runner(int argc, char *argv[]) {
                 "    mmf:<bool>,       // if true do i/o's via memory mapped files (default false)\n"
                 "    r:<bool>,         // do reads (default false)\n"
                 "    w:<bool>,         // do writes (default false)\n"
+                "    random:<bool>     // randomize write data (default false)\n"
+                "    append:<bool>     // run in journaling/append mode (default false)\n"
                 "    syncDelay:<n>,    // secs between fsyncs, like --syncdelay in mongod. (default 0/never)\n"
                 "    fileName:<string> // pathname of the work file (default mongoperf__testfile__tmp)\n"
                 "    opSize:<n>        // size of reads and writes in bytes (default 4096)\n"
@@ -413,7 +437,9 @@ int runner(int argc, char *argv[]) {
     }
     if (err) return 2;
 
-    if (!options["r"].trueValue() && !options["w"].trueValue()) {
+    r = options["r"].trueValue();
+    w = options["w"].trueValue();
+    if (!r && !w) {
         cout << "Error: Neither read nor write modes specified in the options.\n" 
                 "Boolean value 'r' and/or 'w' must be present.\n";
         return 2;
@@ -451,6 +477,14 @@ int runner(int argc, char *argv[]) {
     opSize = options["opSize"].numberInt();
     if (opSize == 0)
         opSize = PG;
+
+    random = options["random"].trueValue();
+    append = options["append"].trueValue();
+
+    if (append && (!w || r || options["mmf"].trueValue())) {
+        cout << "Error: When append is true, w must be true, but r and mmf must be false";
+        return 2;
+    }
 
     go();
 
