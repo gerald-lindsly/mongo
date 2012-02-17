@@ -17,7 +17,7 @@
 /************ see the book for explanations and caveats! *******************/
 /************ in particular, you need two's complement arithmetic **********/
 
-// adapted to C++ by Gerald Lindsly (2012)
+// adapted to C++ permitting multiple instances by Gerald Lindsly (2012)
 
 class RandomGenerator
 {
