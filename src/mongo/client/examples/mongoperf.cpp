@@ -8,7 +8,10 @@
 #define MONGO_EXPOSE_MACROS 1
 
 #include <iostream>
+#ifdef _WIN32
 #include <conio.h>
+#endif
+
 #include <ctime>
 #include "../dbclient.h" // the mongo c++ driver
 #include "../../util/mmap.h"
@@ -38,7 +41,7 @@ unsigned nThreadsRunning = 0;
 const unsigned long long GB = 1024ULL*1024*1024;
 const unsigned MB = 1024 * 1024;
 bool shuttingDown;
-bool random;
+bool randomize;
 bool append;
 bool sparse;
 bool r;
@@ -137,7 +140,7 @@ void workerThread() {
     long long micros = su / nThreadsRunning;
     if (append) {
         while (!shuttingDown) { 
-            if (random)
+            if (randomize)
                 randBuf(rnd, q, opSize);
             lf->synchronousAppend(q, opSize);
             writeOps++;
@@ -153,7 +156,7 @@ void workerThread() {
             }
             if (w) {
                 unsigned long long wofs = (rrand() * PG) % len;
-                if (random)
+                if (randomize)
                     randBuf(rnd, mmf + wofs, opSize);
                 else
                     memcpy(mmf + wofs, q, opSize);
@@ -171,7 +174,7 @@ void workerThread() {
             }
             if( w ) {
                 unsigned long long wofs = (rrand() * PG) % len;
-                if (random)
+                if (randomize)
                     randBuf(rnd, q, opSize);
                 lf->writeAt(wofs, q, opSize);
                 writeOps++;
@@ -493,7 +496,7 @@ int runner(int argc, char *argv[]) {
     if (opSize == 0)
         opSize = PG;
 
-    random = options["random"].trueValue();
+    randomize = options["random"].trueValue();
     append = options["append"].trueValue();
     sparse = options["sparse"].trueValue();
 
