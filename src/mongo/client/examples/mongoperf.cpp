@@ -197,32 +197,32 @@ void go() {
         struct {
             unsigned lo;
             unsigned hi;
-        };
-    };
-    size = 0;
+        } d;
+    } us;
+    us.size = 0;
 
 #ifdef _WIN32
     ::HANDLE h = CreateFileA(workname, GENERIC_READ, 0, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
     if (h != (void*)-1) {
-        lo = GetFileSize(h, &hi);
+        us.d.lo = GetFileSize(h, (DWORD*)&us.d.hi);
         CloseHandle(h);
-        if (len > size) {
-            size = 0;
+        if (len > us.size) {
+            us.size = 0;
             DeleteFileA(workname);
         }
     }
 #else
     struct stat s;
     if (!stat(workname, &s)) {
-        size = s.st_size;
-        if (len > size) {
-            size = 0;
+        us.size = s.st_size;
+        if (len > us.size) {
+            us.size = 0;
             unlink(workname);
         }
     }
 #endif
     
-    if (append && size) {
+    if (append && us.size) {
 #ifdef _WIN32
         DeleteFileA(workname);
 #else
@@ -230,7 +230,7 @@ void go() {
 #endif
     }
     lf = new LogFile(workname, true);
-    if (size == 0 && !append) {
+    if (us.size == 0 && !append) {
         cout << "creating ...\n";
         const unsigned sz = 32 * MB; // needs to be big as we are using synchronousAppend.  if we used a regular MongoFile it wouldn't have to be
         char *buf = (char*) malloc(sz+4096);
