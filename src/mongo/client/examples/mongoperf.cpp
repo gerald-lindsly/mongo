@@ -195,8 +195,8 @@ void go() {
     union {
         unsigned long long size;
         struct {
-            DWORD lo;
-            DWORD hi;
+            unsigned lo;
+            unsigned hi;
         };
     };
     size = 0;
