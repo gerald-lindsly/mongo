@@ -329,7 +329,8 @@ void go() {
     cout << "total time   = " << t.seconds() << " seconds\n" <<
             "total MB/sec = " << 
             setiosflags(ios::fixed) << setprecision(2) << 
-            ((double)totalOps * opSize / MB / t.seconds());
+            ((double)totalOps * opSize / MB / t.seconds()) <<
+            endl;
  }
             
 
