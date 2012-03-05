@@ -10,6 +10,9 @@
 #include <iostream>
 #ifdef _WIN32
 #include <conio.h>
+#else
+#include <fstream>
+#include <sys/stat.h>
 #endif
 
 #include <ctime>
@@ -113,7 +116,7 @@ unsigned long long rrand() {
 
 void randBuf(RandomGenerator* rnd, char* buf, int size)
 {
-    long x;
+    long x = 0;
     int n = 0;
     for (int i = 0; i < size; i++) {
         if (n == 0)
@@ -330,7 +333,7 @@ void go() {
  }
             
 
-char* validOptions[] = {
+const char* validOptions[] = {
     "nThreads", "fileSizeMB", "sleepMicros", "mmf", 
     "r", "w", "syncDelay", "fileName", "opSize", "random", "append", "sparse", 0
 };
@@ -446,7 +449,7 @@ int runner(int argc, char *argv[]) {
     for (BSONObjIterator i = options.begin(); i.more(); ) {
         const char* name = i.next().fieldName();
         bool found = false;
-        for (char** s = validOptions; !found && *s; s++)
+        for (const char** s = validOptions; !found && *s; s++)
             found = strcmp(*s, name) == 0;
         if (!found) {
             err = true;
